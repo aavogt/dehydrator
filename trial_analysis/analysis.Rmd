@@ -1,0 +1,305 @@
+# Dehydrator trial run
+
+started at 16:07
+dehydrator not running initially
+box was in the sun
+outer sensor not in the sun
+box in the shade after around 4:30
+mostly ready around 5:40, the third measurement
+fourth measurement nearly all ready
+finished around 9pm
+
+Goals:
+
+* validation by mass balance: I could assume some flow pattern (plug or CSTR) if necessary, but the CSTR volume is 10L. I have an unknown flow rate. If the required flow rate is constant my humidities are likely to be accurate. Another test is to run it without the fan.
+
+* sample rate & history to store so that the robust regression end-point detection
+
+* change fan speed to maintain a desired humidity? Should save energy since the humidity drops quite a bit towards the end, so at the cost of slightly slower drying (and a higher minimum dryness), less air needs to be heated. Heating 1m³ from 30 to 60 takes 60 kJ, Evaporating 1 g water is 2.2 kJ. At the start, air heating is 50% : 60 / (2.2 * 25  + 60). At the end
+
+
+```{r}
+library(pacman)
+# p_load(lattice); p_unload(lattice)
+p_load(MASS, wavethresh, tidyverse, ggplot2, RcppGSL)
+# tidyverse after wavethresh so select refers to dplyr::select not MASS::select
+
+# https://en.wikipedia.org/wiki/Welch%27s_method
+# except if there are three overlapping windows, (2?M>D>M)
+# the last window gets weight 1/2 and the first two get 1/4, 1/4 each
+#
+# what is the total length? It is x - (x%%(M-D))
+# I want it equal to the original length, so the final D will have to be more (or less)
+windowedWaveletFilter <- function(x, M=1024, D=256, mannum=30) {
+        L <- floor(length(x) / (M-D))
+        hamming <- 25/46 - 21/46 * cos(2*pi*seq.int(0, M-1)/(M-1))
+        # hamming doesn't work. Perhaps it is somehow different if it
+        # multiplied centred data
+        windows <- map(seq(L), ~ {
+                    # print(x[ seq(M) + (M-D) * (. - 1) ])
+                    xWin <- x[ seq(M) + (M-D) * (. - 1) ] %>%
+                                coalesce(. , mean(. , na.rm=T)) %>%
+                       # should be delegated to a function
+                       wd(filter.number=4) %>% # picked at random
+                       threshold(policy="mannum", value=mannum) %>%
+                       wr
+        })
+          # overlapping points are divided by half
+        mergedWindows <- reduce(windows, ~
+                 (c(.x, rep(0, M - D)) + c(rep(0, length(.x) - D), .y )) *
+                         c(rep(1, length(.x) - D), rep(0.5, D), rep(1, M - D)))
+        c(head(mergedWindows, length(x)),
+          rep(NA, max(0, length(x) - length(mergedWindows))))
+}
+
+
+
+h0 <- read_csv("aug7_rice.csv.xz", col_types="iiiiidddddd") %>%
+  within({ minutes <- t / 1000.0 / 60
+          mode <- factor(mode)
+          wDelta <- w2 - w1 }) # g water/m3
+
+h <- h0 %>%
+  select(-t) %>%
+  group_by(mode,j,ret0, ret1) %>%
+  group_modify( ~ .x %>% imap_dfc(function(r, name) {
+                  vs <- windowedWaveletFilter(r, mannum=200)
+                  out <- tibble(r, vs)
+                  names(out) <- c(name, paste(name, ".s", sep=""))
+                  out
+                 })) %>%
+  ungroup %>% mutate(phase=cut(minutes, 10))
+# for the wavlet threshold I manually chose a number of coefficients just large
+# enough to keep the small spikes between the large spikes during weighing (I
+# turned the dehydrator was turned off and put the door with the sensor taped
+# to it on top)
+
+# h now contains T1 through w2 as well as T1.s which has been smoothed with
+# wavelets
+
+ggplot(h %>% pivot_longer(c(wDelta, wDelta.s)) %>% select(minutes, mode, value, name)
+       # %>% rbind(h0 %>% select(minutes, mode, value=wDelta) %>% cbind(name="unsplined"))
+       , aes(minutes, value, col=name)) +
+        geom_line(alpha=0.8) +
+        facet_wrap(~mode)
+```
+
+
+
+```{r}
+ggplot(h, aes(minutes, wDelta.s - wDelta, col=mode)) + geom_point(alpha=0.1) +
+        ggtitle("wavelet residuals")
+```
+
+Above the residuals are not really independent of time as the residual variance is reduced when the oven is opened leading to sharp changes in the acutal and fitted values. Density plots of the residuals over 27 minute intervals are consistent.
+
+
+```{r}
+ggplot(h, aes(wDelta.s - wDelta, group=interaction(mode, j), col=mode, linetype=factor(j))) +
+        geom_density() +
+        facet_wrap(~ phase)
+```
+
+I select wavelet--smoothed high power (mode=2), last (j=2) as the reference since it is most likely to be correct. What about both smoothed?
+
+
+```{r}
+hT <- h %>% filter(mode=="2", j == 2)
+hPH <- h %>%
+        group_by(mode, j, phase) %>%
+        group_modify( ~ { 
+                ref <- hT %>% filter(phase == .y$phase)
+                refwDelta <- spline(ref$minutes, y = ref$wDelta.s, xout = .x$minutes)$y
+                # ref has a few more/less data points
+                err <- .x$wDelta - refwDelta
+                tibble(sd = sd(err), mean= mean(err))
+       }) %>% ungroup %>% pivot_longer(c(sd, mean))
+
+ggplot(hPH %>% filter(phase != last(levels(phase))),
+       aes(phase, value, col=factor(j), group=interaction(j, mode))) + geom_line() +
+  facet_grid(name~ c("0 : low power", "1 : medium power", "2 : high power")[mode], scales="free_y") +
+  scale_color_discrete(name = "order (j)") +
+  scale_x_discrete(guide = guide_axis(angle=90)) +
+  ggtitle("Effect of power level and measurement order")
+
+
+hPH2 <- h %>%
+        group_by(mode, j, phase) %>%
+        group_modify( ~ { 
+                ref <- hT %>% filter(phase == .y$phase)
+                refwDelta <- spline(ref$minutes, y = ref$wDelta.s, xout = .x$minutes)$y
+                # ref has a few more/less data points
+                err <- .x$wDelta.s - refwDelta
+                tibble(err)
+       }) %>% ungroup
+
+lm( err ~ factor(j)+mode +phase, hPH2)
+```
+
+the error is not large. So I don't really see the benefit of mode=2. So I'll go with mode=0 and save power and hopefully extend instrument life.
+
+What about sample rate? I need the rlm. And I am given the desired w2 threshold
+
+```{r}
+#rlmPred <- function(w2.target=
+# redo w2.s
+h0 <- h %>% filter(mode == "0")
+h0 <- h0[ order(h0$minutes) ,  ]
+h0$w2.s <- windowedWaveletFilter(h0$w2, M=512, mannum=8)
+ggplot(h0, aes(minutes, w2.s, col=j)) + geom_line()
+
+
+```
+```{r}
+
+h0Pred <- function(samples=1000, subsample = 10, future=5, minutes.truth=225, truth.width=10, method="M") {
+        hp <- h0 %>% filter(minutes < (minutes.truth-future)) %>%
+                (function(x) x[ seq(nrow(x), 0, by=-subsample) %>% (function(y) head(y, samples)) %>% rev, ] )
+        # it's hard to read what the w2.s graph says the w2 is when finished
+        # (arbitrarily defined by whatever humidity happens at minutes.truth,
+        # smoothed by a robust linear regression including points 10 minutes on
+        # either side)
+        w2.truth <- h0 %>% filter(abs(minutes - minutes.truth) < truth.width) %>%
+                rlm( w2.s ~ minutes, .) %>%
+                predict(data.frame(minutes=minutes.truth))
+        # now I restrict myself to linear regressions that predict the future
+        # by the number of minutes set in the future variable
+        m <- rlm( w2 ~ minutes, hp, method=method)
+        h <- c(- 1/coef(m)[2], (coef(m)[1] - w2.truth) / coef(m)[2]^2 )
+        xStarVar <- (h %*% vcov(m) %*% h) %>% as.numeric
+        xStar <- (w2.truth - coef(m)[1]) / coef(m)[2]
+        tibble(end=xStar, end.se=sqrt(xStarVar))
+}
+# h0Pred()
+comb <- expand_grid(samples=seq(10, 20, by=1), subsample=seq(1, 12, by=1), future=c(0, 5, 8)) %>% group_by(samples, subsample, future) %>% summarize(h0Pred(samples, subsample, future))
+ggplot(comb %>% filter( abs(end-225) < 10), aes(subsample, samples, col=end-225, size=end.se)) + geom_point() + 
+       facet_wrap(~ future)
+```
+
+rather than rlm, redo it with wavelets which are also part of gsl. Should I learn rcpp to call gsl?
+
+```{r}
+
+```
+
+
+```{r}
+h0Pred <- function(samples=1000, subsample = 10, future=5, minutes.truth=225, truth.width=10, method="M") {
+        hp <- h0 %>% filter(minutes < (minutes.truth-future)) %>%
+                (function(x) x[ seq(nrow(x), 0, by=-subsample) %>% (function(y) head(y, samples)) %>% rev, ] )
+        # it's hard to read what the w2.s graph says the w2 is when finished
+        # (arbitrarily defined by whatever humidity happens at minutes.truth,
+        # smoothed by a robust linear regression including points 10 minutes on
+        # either side)
+        w2.truth <- h0 %>% filter(abs(minutes - minutes.truth) < truth.width) %>%
+                rlm( w2.s ~ minutes, .) %>%
+                predict(data.frame(minutes=minutes.truth))
+        # now I restrict myself to linear regressions that predict the future
+        # by the number of minutes set in the future variable
+        m <- rlm( w2 ~ minutes, hp, method=method)
+        h <- c(- 1/coef(m)[2], (coef(m)[1] - w2.truth) / coef(m)[2]^2 )
+        xStarVar <- (h %*% vcov(m) %*% h) %>% as.numeric
+        xStar <- (w2.truth - coef(m)[1]) / coef(m)[2]
+        tibble(end=xStar, end.se=sqrt(xStarVar))
+}
+```
+
+
+
+
+
+
+```{r}
+ggplot(h, aes(minutes, 60 / (2.2* (w2-w1) + 60))) + geom_line() + ylab("fraction of energy heating drying air")
+```
+
+The above plot shows the ratio of sensible heat (of air) to the total heat (latent heat of evaporated water and sensible heat of air). It supports the goal of changing the fan speed. Or it supports dropping the temperature set-point. Or it supports a heat exchanger to preheat the feed air using the humidified air. At best around 25% of the heating energy might be needed? Maybe even less if it is a condensing heat exchanger.
+
+
+```{r}
+wt <- within(read_csv("aug7_weights.csv", skip=1, col_types="diidddd"), {
+             trays <- tray.a+tray.b+tray.c+tray.d
+             rice <- trays - 775 # tare weight
+  })
+```
+
+## Tray Weight
+### Option 1
+Just sum the weights of each tray, subtracting off the tare:
+
+```{r}
+ggplot(wt, aes(start.min, rice)) + geom_point() + geom_smooth()
+```
+
+### Option 2
+I can do one smooth for each tray, then sum the smooths.
+I assume the residuals of separate smooths are independent, so the variance of
+the sum is the sum of the variances. 
+
+```{r}
+trayNames <- paste("tray.", c("a", "b", "c", "d"), sep = "")
+
+newMins <- h$minutes[ h$minutes < max(wt$start.min)]
+
+traySmooths <- trayNames %>%
+        map(function(x)
+            loess(as.formula(paste(x, "~ start.min")),
+                  wt) %>%
+            predict(se = T, newdata = newMins) %>%
+            within({ var.fit <- se.fit^2 ; N <- length(trayNames) } )
+        )
+# drop the NAs
+combineSmoothsPred <- ~ within(.x, {
+  # welch-satterwaite
+  df <- (sum(var.fit)/N + sum(.y$var.fit)/.y$N)^2 /
+     (sum(var.fit)^2 / N^2 / df + with(.y, sum(var.fit)^2 / N^2 / df))
+  N <- N + .y$N
+  fit <- fit + .y$fit
+  var.fit <- var.fit + .y$var.fit
+})
+traySmooths2 <- traySmooths %>%
+   reduce(combineSmoothsPred) %>%
+   within({
+        var.fit <- var.fit / length(trayNames)
+        se.fit <- sqrt(var.fit)
+        })
+ 
+traySmooths3 <- traySmooths2[c("fit", "se.fit")] %>%
+        as_tibble %>%
+        within({ minutes <- newMins
+           y <- fit
+           y.low  <- fit + se.fit* qt(0.025, df = traySmooths2$df)
+           y.high <- fit + se.fit* qt(0.975, df = traySmooths2$df)
+        })
+
+ggplot(traySmooths3, aes(minutes, y, ymin=y.low, ymax=y.high)) + geom_smooth(stat="identity")
+```
+
+
+```{r}
+errorRangeDensities <- rbind(
+  loess(trays ~ start.min, wt) %>%
+          predict(newdata= newMins, se=T) %>%
+          with(se.fit * (qt(0.975, df=df) - qt(0.025, df=df))) %>%
+          density %>%
+          .[ c("x", "y") ] %>%
+          as_tibble %>%
+          within(method <- "smooth of sum"),
+  ggplot2:::predictdf( loess(y ~ x, wt %>% within({x <- start.min ; y <- trays} )), newMins, T, 0.95) %>%
+          with(ymax - ymin) %>%
+          density %>%
+          .[ c("x", "y") ] %>%
+          as_tibble %>%
+          within({ method <- "ggplot"; y <- jitter(y, factor=100) }),
+  density(with(traySmooths3, y.high - y.low))[ c("x", "y") ] %>%
+    as_tibble %>%
+    within(method <- "sum of smooth"))
+ggplot(errorRangeDensities, aes(x,y, col=method)) + geom_line() # + facet_wrap(~ method)
+```
+
+In conclusion, ggplot's interval is understandably smaller than the "sum of smooth", I can replicate ggplot's way. It is not a prediction interval.
+
+
+So I will go with sum-of-smooths.
+
+
