@@ -256,8 +256,6 @@ int main() {
 
     } while (anyKey == PICO_ERROR_TIMEOUT || anyKey == ' ');
 
-    srand(to_us_since_boot(get_absolute_time()));
-
     sensirion_i2c_init();
     
     int ok[2];
