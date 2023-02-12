@@ -177,22 +177,25 @@ void rb_advance(ringbuffer *rb) {
         };
 }
 
+// write and check that we can read the same thing back
+bool sync_rb (ringbuffer*rb) {
+  flash_range_program(((long)rb->p) - XIP_BASE, (uint8_t*)rb->page_buffer, FLASH_PAGE_SIZE);
+  struct entry* e_flash = (entry*)rb->p;
+  e_flash += rb->e - rb->e_L;
+
+  return entry_eq(e_flash, rb->e) || !rb->e->valid;
+};
+
+// write
 void insert_rb(ringbuffer* rb, entry* en) {
-        // add the entry to flash
         *rb->e = *en;
-        flash_range_program(((long)rb->p) - XIP_BASE, (uint8_t*)rb->page_buffer, FLASH_PAGE_SIZE);
+        if (!sync_rb(rb)) {
+                rb->e->valid = false;
+                if (!sync_rb(rb)) {
+                        // panic somehow
+                }
 
-        // now check written data?
-        // I don't have a pointer into the flash indicating the current entry
-        // I only have page
-        struct entry* e_flash = (entry*)rb->p;
-        e_flash += rb->e - rb->e_L;
-
-        if (!entry_eq(e_flash, en)) printf("error");
-        // recover by marking en.valid=false
-        // I could call insert_rb
-        //
-
+        }
 }
 
 #define SHT3X_ADDR 0x45
