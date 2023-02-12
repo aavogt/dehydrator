@@ -49,20 +49,23 @@ typedef struct entry {
         bool valid; // allow marking invalid, if I cannot write (the rest?) or erase
         short RH[2];
         short T[2];
+        // should time also be explicit?
 } entry;
-// sizeof(entry) ...
-// store data at different times
-// compression:
-// and also learn https://raw.githack.com/facebook/zstd/release/doc/zstd_manual.html
-// first does zstd compile?
-// https://spin.atomicobject.com/2013/03/14/heatshrink-embedded-data-compression/
-// https://github.com/dblalock/sprintz looks the best so far
+// compression options:
+// - https://spin.atomicobject.com/2013/03/14/heatshrink-embedded-data-compression/
+// - https://github.com/dblalock/sprintz would get the best compression ratio,
+//   but it looks harder to use (c++ and many files and less documentation
+//   outside of papers)
+// all compression needs more than a single `entry`. This suggests dividing the flash into 3 segments:
+// 1. code
+// 2. ringbuffer (uncompressed)
+// 3. spiffs whose files are compressed ringbuffers
 
 typedef struct { uint8_t body[FLASH_SECTOR_SIZE]; } sector_t;
 
 typedef struct { uint8_t body[FLASH_PAGE_SIZE]; } page_t;
 
-// ring buffer
+// untested ring buffer for storing `entry`
 // https://archived.moe/diy/thread/2440483/#2445511
 // keep in mind writing addresses start at 0, while reading addresses
 // (by dereferencing these pointers) start at XIP_BASE
@@ -147,19 +150,19 @@ void init_rb(ringbuffer* rb) {
                 *rbe++ = *e++;
 
         // what if the current sector was not erased correctly?
-        // I could copy the current sector to memory
-        // then erase it
-        // then write it back
-        // or I could just accept that a sectors worth of data is invalid?
-        // it would be better to know when data is invalid
-        // so I need another bit
+        // rather than:
+        //   copy the current sector to memory
+        //   then erase it
+        //   then write it back
+        // just write valid=false for each possible entry
 }
 
 bool entry_eq(entry* x, entry* y) {
         return x->T[0] == y->T[0] &&
                x->T[1] == y->T[1] &&
                x->RH[0] == y->RH[0] &&
-               x->RH[1] == y->RH[1];
+               x->RH[1] == y->RH[1] &&
+               x->valid == y->valid;
 }
 
 void rb_advance(ringbuffer *rb) {

@@ -1,6 +1,6 @@
 # Dehydrator Automation
 
-I wanted a food dehydrator that shut itself off when finished. Being finished is also hard to define, so I measure weight and water content of the air. I am also interested in dropping the temperature so as to minimize cost, maintain a constant food temperature, or a similar objective.
+I wanted a food dehydrator that shut itself off when finished. Being finished is also hard to define, so I measure weight manually and the device measures the water content of the air. I am also interested in dropping the temperature so as to minimize cost, maintain a constant food temperature, or a similar objective.
 
 Bill of materials
 
