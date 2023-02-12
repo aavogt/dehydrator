@@ -240,12 +240,6 @@ void ir_shutdown(void) {
 int main() {
     stdio_init_all();
 
-    gsl_rng * rng = gsl_rng_alloc(gsl_rng_default);
-
-    bool light = 0;
-    gpio_init(25);
-    gpio_set_dir(25, GPIO_OUT);
-
     int anyKey;
     do {
       printf("press space to blink IR, any other key starts recording\n");
@@ -285,24 +279,5 @@ int main() {
                     humidity[0] / 1000.0f, humidity[1]  /1000.0f);
     sleep_ms(1000);
     }
-
-    // printf("\n\nt,mode,j,ret0,ret1,T0,T1,RH0,RH1,w1,w2\n");
-    // while (true) {
-    //   foreachBus(sht3x_set_power_mode(SHT3X_MEAS_MODE_HPM));
-    //   foreachBus(sht3x_measure(SHT3X_ADDR));
-    //   sleep_ms(15); // 4 or 6 for LPM MPM
-    //   uint32_t time = to_ms_since_boot(get_absolute_time());
-    //   int32_t temp[2], humidity[2];
-    //   int8_t rets[2];
-    //   foreachBus(rets[i] = sht3x_read(SHT3X_ADDR, temp+i, humidity+i));
-    //   printf("%d, %d, %d, %0.3f, %0.3f, %0.3f, %0.3f, %0.4f, %0.4f\n",
-    //                   time,
-    //                   rets[0], rets[1],
-    //                   temp[0] / 1000.0f, temp[1] / 1000.0f,
-    //                   humidity[0] / 1000.0f, humidity[1] / 1000.0f,
-    //                   absHumidity(temp[0]/1000.0f, humidity[0]/100000.0f),
-    //                   absHumidity(temp[1]/1000.0f, humidity[1]/100000.0f));
-    //  sleep_ms(1000);
-    // }
     return 0;
 }
